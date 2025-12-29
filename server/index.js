@@ -24,8 +24,15 @@ console.log('   Using: Resend HTTP API');
 console.log('   API Key configured:', RESEND_API_KEY ? 'Yes' : 'No (emails will be logged only)');
 console.log('   From:', EMAIL_FROM);
 
+// Generate a unique Message-ID for email threading
+function generateMessageId() {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 15);
+  return `${timestamp}.${random}@shootflow.app`;
+}
+
 // Resend email sender using HTTP API (bypasses SMTP port blocking)
-// Supports email threading via headers
+// Supports email threading via custom Message-ID headers
 async function sendEmailViaResend(to, subject, html, threadOptions = {}) {
   if (!RESEND_API_KEY) {
     console.log('📧 [DEMO MODE] Email would be sent:');
@@ -40,21 +47,29 @@ async function sendEmailViaResend(to, subject, html, threadOptions = {}) {
       from: `ShootFlow <${EMAIL_FROM}>`,
       to: to,
       subject: subject,
-      html: html
+      html: html,
+      headers: {}
     };
 
-    // Add threading headers if this is a follow-up email
     if (threadOptions.threadId) {
-      // For Gmail threading to work, we need:
-      // 1. Same subject line (base subject without step prefixes)
-      // 2. References header pointing to original message
-      // 3. In-Reply-To header for the immediate parent
+      // This is a REPLY - add threading headers to link to parent
+      // Gmail threads based on: In-Reply-To + References + similar subject
+      const parentMessageId = `<${threadOptions.threadId}>`;
       emailPayload.headers = {
-        'In-Reply-To': `<${threadOptions.threadId}@resend.dev>`,
-        'References': `<${threadOptions.threadId}@resend.dev>`,
-        'X-Thread-ID': threadOptions.threadId
+        'In-Reply-To': parentMessageId,
+        'References': parentMessageId
       };
-      console.log('📧 Threading email to:', threadOptions.threadId);
+      console.log('📧 Threading reply to:', parentMessageId);
+    } else {
+      // This is the FIRST email - set a custom Message-ID we can reference later
+      const customMessageId = generateMessageId();
+      emailPayload.headers = {
+        'Message-ID': `<${customMessageId}>`
+      };
+      console.log('📧 Creating new thread with Message-ID:', customMessageId);
+      
+      // Store this so we return it for future threading
+      threadOptions._generatedMessageId = customMessageId;
     }
 
     const response = await fetch('https://api.resend.com/emails', {
@@ -73,8 +88,10 @@ async function sendEmailViaResend(to, subject, html, threadOptions = {}) {
       throw new Error(data.message || 'Failed to send email');
     }
 
-    console.log('✅ Email sent via Resend:', data.id, threadOptions.threadId ? '(threaded)' : '(new thread)');
-    return { messageId: data.id };
+    // Return our custom Message-ID for first email, or Resend's ID for replies
+    const returnMessageId = threadOptions._generatedMessageId || data.id;
+    console.log('✅ Email sent via Resend:', data.id, '| Thread ID:', returnMessageId);
+    return { messageId: returnMessageId, resendId: data.id };
   } catch (error) {
     console.error('❌ Resend email failed:', error.message);
     throw error;
@@ -600,28 +617,13 @@ async function sendEmail(to, template, shoot, threadMessageId = null) {
   try {
     const emailContent = emailTemplates[template](shoot);
     
-    // For threading to work in Gmail, we use a consistent base subject
-    // and add step indicators as prefixes
+    // For Gmail threading: use IDENTICAL subject line for all emails in thread
+    // Gmail threads by: In-Reply-To header + References header + SAME subject
     const shootName = shoot.name || 'Shoot Request';
-    const baseSubject = `ShootFlow: ${shootName}`;
     
-    // Step indicators for each template type
-    const stepIndicators = {
-      newRequest: '🔔 [Step 1/6] New Request',
-      newRequestMulti: '🔔 [Step 1/6] New Request',
-      quoteSubmitted: '✅ [Step 2/6] Quote Received',
-      quoteApproved: '🎉 [Step 3/6] Approved',
-      quoteRejected: '❌ [Revision Needed]',
-      invoiceReminder: '⏰ [Step 4/6] Invoice Reminder',
-      invoiceUploaded: '📄 [Step 5/6] Invoice Uploaded',
-      paymentComplete: '💵 [Step 6/6] Payment Complete'
-    };
-    
-    // Use consistent subject for threading (Gmail threads by subject + In-Reply-To)
-    const stepIndicator = stepIndicators[template] || '';
-    const subject = threadMessageId 
-      ? `Re: ${baseSubject} - ${stepIndicator}`  // Reply format for threading
-      : `${baseSubject} - ${stepIndicator}`;     // Original message
+    // ALL emails use the SAME subject (critical for Gmail threading!)
+    // The step info will be in the email body, not subject
+    const subject = `ShootFlow: ${shootName}`;
     
     const mailOptions = {
       to: to,
@@ -932,52 +934,54 @@ app.post('/api/email/test-thread', async (req, res) => {
 
     const results = [];
     let threadId = null;
+    
+    // Delay between emails (3 seconds) to ensure correct order
+    const EMAIL_DELAY = 3000;
 
     // Step 1: New Request (creates the thread)
-    console.log('📧 Sending Step 1: New Request...');
+    console.log('📧 Sending Step 1/6: New Request...');
     const step1 = await sendEmail(to, 'newRequest', testShoot, null);
     results.push({ step: 1, template: 'newRequest', ...step1 });
     threadId = step1.messageId; // Store for threading
 
-    // Wait a moment between emails
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, EMAIL_DELAY));
 
     // Step 2: Quote Submitted (threads to step 1)
-    console.log('📧 Sending Step 2: Quote Submitted...');
+    console.log('📧 Sending Step 2/6: Quote Submitted...');
     const step2 = await sendEmail(to, 'quoteSubmitted', testShoot, threadId);
     results.push({ step: 2, template: 'quoteSubmitted', ...step2 });
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, EMAIL_DELAY));
 
     // Step 3: Quote Approved (threads to step 1)
-    console.log('📧 Sending Step 3: Quote Approved...');
+    console.log('📧 Sending Step 3/6: Quote Approved...');
     const step3 = await sendEmail(to, 'quoteApproved', testShoot, threadId);
     results.push({ step: 3, template: 'quoteApproved', ...step3 });
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, EMAIL_DELAY));
 
     // Step 4: Invoice Reminder (threads to step 1)
-    console.log('📧 Sending Step 4: Invoice Reminder...');
+    console.log('📧 Sending Step 4/6: Invoice Reminder...');
     const step4 = await sendEmail(to, 'invoiceReminder', testShoot, threadId);
     results.push({ step: 4, template: 'invoiceReminder', ...step4 });
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, EMAIL_DELAY));
 
     // Step 5: Invoice Uploaded (threads to step 1)
-    console.log('📧 Sending Step 5: Invoice Uploaded...');
+    console.log('📧 Sending Step 5/6: Invoice Uploaded...');
     const step5 = await sendEmail(to, 'invoiceUploaded', testShoot, threadId);
     results.push({ step: 5, template: 'invoiceUploaded', ...step5 });
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, EMAIL_DELAY));
 
     // Step 6: Payment Complete (threads to step 1)
-    console.log('📧 Sending Step 6: Payment Complete...');
+    console.log('📧 Sending Step 6/6: Payment Complete...');
     const step6 = await sendEmail(to, 'paymentComplete', testShoot, threadId);
     results.push({ step: 6, template: 'paymentComplete', ...step6 });
 
     res.json({ 
       success: true, 
-      message: 'Complete email thread sent! Check your inbox for 6 emails in one thread.',
+      message: 'Complete email thread sent! Check your inbox for 6 emails in one thread. Note: Gmail shows newest first - scroll down to see Step 1.',
       threadId,
       results 
     });
