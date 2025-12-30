@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const nodemailer = require('nodemailer');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -12,37 +11,22 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============================================
-// EMAIL CONFIGURATION (Gmail SMTP)
+// EMAIL CONFIGURATION (SendGrid HTTP API)
 // ============================================
+// SendGrid free tier: 100 emails/day - can send to ANY email!
+// Get API key at: https://sendgrid.com → Settings → API Keys
 
-// Gmail SMTP credentials
-const GMAIL_USER = process.env.GMAIL_USER || 'Bhavya.oberoi@learnapp.co';
-const GMAIL_PASS = process.env.GMAIL_PASS || 'xvtu kcpv mgsg gcvb';
-const EMAIL_FROM = process.env.EMAIL_FROM || 'Bhavya.oberoi@learnapp.co';
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || '';
+const EMAIL_FROM = process.env.EMAIL_FROM || 'bhavya.oberoi@learnapp.co';
+
+// Resend fallback (for when SendGrid not configured)
+const RESEND_API_KEY = process.env.RESEND_API_KEY || 're_gPwuFNvg_JEL3arzPU7QApcCZz7CW5xFu';
 
 console.log('📧 Email Configuration:');
-console.log('   Using: Gmail SMTP');
-console.log('   User:', GMAIL_USER);
+console.log('   Primary: SendGrid HTTP API (can send to ANY email)');
+console.log('   Fallback: Resend API');
 console.log('   From:', EMAIL_FROM);
-
-// Create Gmail transporter using 'gmail' service
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: GMAIL_USER,
-    pass: GMAIL_PASS
-  }
-});
-
-// Verify connection on startup
-transporter.verify((error, success) => {
-  if (error) {
-    console.log('⚠️ Gmail SMTP verification failed:', error.message);
-    console.log('   Will attempt to send emails anyway...');
-  } else {
-    console.log('✅ Gmail SMTP ready - can send to ANY email!');
-  }
-});
+console.log('   SendGrid:', SENDGRID_API_KEY ? '✅ Configured' : '⚠️ Not configured - set SENDGRID_API_KEY');
 
 // Generate a unique Message-ID for email threading
 function generateMessageId() {
@@ -51,39 +35,113 @@ function generateMessageId() {
   return `${timestamp}.${random}@learnapp.co`;
 }
 
-// Send email via Gmail SMTP
+// Send email via SendGrid HTTP API (with Resend fallback)
 async function sendEmailViaSMTP(to, subject, html, threadOptions = {}) {
+  let messageId = '';
+  
+  if (threadOptions.threadId) {
+    console.log('📧 Threading reply to:', threadOptions.threadId);
+  } else {
+    messageId = generateMessageId();
+    threadOptions._generatedMessageId = messageId;
+    console.log('📧 Creating new thread with Message-ID:', messageId);
+  }
+
+  // Try SendGrid HTTP API first (can send to ANY email!)
+  if (SENDGRID_API_KEY) {
+    try {
+      const emailPayload = {
+        personalizations: [{
+          to: [{ email: to }]
+        }],
+        from: { email: EMAIL_FROM, name: 'ShootFlow' },
+        subject: subject,
+        content: [{ type: 'text/html', value: html }]
+      };
+
+      // Add threading headers
+      if (threadOptions.threadId || messageId) {
+        emailPayload.headers = {};
+        if (threadOptions.threadId) {
+          emailPayload.headers['In-Reply-To'] = `<${threadOptions.threadId}>`;
+          emailPayload.headers['References'] = `<${threadOptions.threadId}>`;
+        } else if (messageId) {
+          emailPayload.headers['Message-ID'] = `<${messageId}>`;
+        }
+      }
+
+      const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SENDGRID_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(emailPayload)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`SendGrid error: ${response.status} - ${errorText}`);
+      }
+
+      const returnMessageId = threadOptions._generatedMessageId || messageId;
+      console.log('✅ Email sent via SendGrid:', returnMessageId, '| To:', to);
+      return { messageId: returnMessageId, method: 'sendgrid' };
+      
+    } catch (sendgridError) {
+      console.log('⚠️ SendGrid failed:', sendgridError.message);
+      console.log('   Falling back to Resend API...');
+    }
+  } else {
+    console.log('⚠️ SendGrid not configured, using Resend...');
+  }
+  
+  // Fallback to Resend HTTP API
   try {
-    let messageId = '';
+    // For Resend free tier: send to verified email with intended recipient info
+    const VERIFIED_EMAIL = 'bhavya.oberoi@learnapp.co';
     
-    const mailOptions = {
-      from: `ShootFlow <${EMAIL_FROM}>`,
-      to: to,
-      subject: subject,
-      html: html
+    // Add a banner showing the intended recipient (for free tier limitation)
+    const emailWithBanner = `
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px 20px; margin-bottom: 20px; border-radius: 8px;">
+        <p style="margin: 0; color: white; font-size: 14px;">
+          <strong>📧 INTENDED RECIPIENT:</strong> ${to}
+        </p>
+        <p style="margin: 5px 0 0 0; color: rgba(255,255,255,0.8); font-size: 12px;">
+          Configure SendGrid to send directly to this email.
+        </p>
+      </div>
+      ${html}
+    `;
+    
+    const emailPayload = {
+      from: 'ShootFlow <onboarding@resend.dev>',
+      to: VERIFIED_EMAIL,
+      subject: `[For: ${to}] ${subject}`,
+      html: emailWithBanner
     };
 
     if (threadOptions.threadId) {
-      // Threading - reply to existing thread
-      mailOptions.inReplyTo = `<${threadOptions.threadId}>`;
-      mailOptions.references = `<${threadOptions.threadId}>`;
-      console.log('📧 Threading reply to:', threadOptions.threadId);
-    } else {
-      // New thread - create custom message ID
-      messageId = generateMessageId();
-      mailOptions.messageId = `<${messageId}>`;
-      threadOptions._generatedMessageId = messageId;
-      console.log('📧 Creating new thread with Message-ID:', messageId);
+      emailPayload.headers = { 'In-Reply-To': `<${threadOptions.threadId}>`, 'References': `<${threadOptions.threadId}>` };
+    } else if (messageId) {
+      emailPayload.headers = { 'Message-ID': `<${messageId}>` };
     }
 
-    const info = await transporter.sendMail(mailOptions);
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(emailPayload)
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || 'Resend API error');
     
-    const returnMessageId = threadOptions._generatedMessageId || info.messageId;
-    console.log('✅ Email sent via Gmail:', info.messageId, '| To:', to);
-    return { messageId: returnMessageId, gmailId: info.messageId };
-  } catch (error) {
-    console.error('❌ Gmail SMTP failed:', error.message);
-    throw error;
+    console.log('✅ Email sent via Resend (fallback):', data.id, '| For:', to, '| Delivered to:', VERIFIED_EMAIL);
+    return { messageId: threadOptions._generatedMessageId || data.id, resendId: data.id, method: 'resend' };
+    
+  } catch (resendError) {
+    console.error('❌ All email methods failed:', resendError.message);
+    throw new Error(`Email send failed: ${resendError.message}`);
   }
 }
 
@@ -585,15 +643,24 @@ async function sendEmail(to, template, shoot, threadMessageId = null) {
     const emailContent = emailTemplates[template](shoot);
     
     // For Gmail threading: use IDENTICAL subject line for all emails in thread
-    const shootName = shoot.name || 'Shoot Request';
-    const subject = `ShootFlow: ${shootName}`;
+    // Use threadSubject if provided (for multi-shoot requests), otherwise use shoot name
+    // This ensures all emails for a request group have the same subject
+    let subjectIdentifier = shoot.threadSubject || shoot.name || 'Shoot Request';
+    
+    // For multi-shoot requests, use a consistent identifier based on request group
+    if (shoot.requestGroupId) {
+      // Use the request group ID or first shoot name for consistent threading
+      subjectIdentifier = shoot.threadSubject || `Request ${shoot.requestGroupId.substring(0, 8)}`;
+    }
+    
+    const subject = `ShootFlow: ${subjectIdentifier}`;
     
     // Use Gmail SMTP to send email
     const threadOptions = threadMessageId ? { threadId: threadMessageId } : {};
     const info = await sendEmailViaSMTP(to, subject, emailContent.html, threadOptions);
     
-    console.log(`✉️ Email sent: ${template} to ${to} - ${info.messageId}${threadMessageId ? ' (threaded)' : ' (new thread)'}`);
-    return { success: true, messageId: info.messageId };
+    console.log(`✉️ Email sent: ${template} to ${to} - ${info.messageId}${threadMessageId ? ' (threaded)' : ' (new thread)'} | Subject: ${subject}`);
+    return { success: true, messageId: info.messageId, subject };
   } catch (error) {
     console.error(`❌ Email failed: ${template} to ${to}`, error.message);
     return { success: false, error: error.message };

@@ -12,15 +12,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './components/LoginPage';
 import { EditShootForm } from './components/EditShootForm';
 import { isSupabaseConfigured } from './lib/supabase';
-import { 
-  emailNewRequest, 
-  emailQuoteSubmitted, 
-  emailQuoteApproved, 
-  emailQuoteRejected, 
-  emailInvoiceUploaded, 
-  emailPaymentComplete,
-  DEFAULT_RECIPIENTS 
-} from './services/emailService';
+import { DEFAULT_RECIPIENTS } from './services/emailService';
 
 // API URL Configuration
 // In production (Railway), use the production API
@@ -245,7 +237,7 @@ function AppContent() {
   const triggerEmail = async (
     shootId: string,
     shootName: string,
-    emailType: 'new_request' | 'new_request_multi' | 'sent_to_vendor' | 'quote_submitted' | 'approved' | 'invoice_reminder' | 'invoice_uploaded',
+    emailType: 'new_request' | 'new_request_multi' | 'sent_to_vendor' | 'quote_submitted' | 'approved' | 'rejected' | 'invoice_reminder' | 'invoice_uploaded' | 'payment_complete',
     recipientEmail: string,
     additionalData?: {
       dates?: string;
@@ -265,8 +257,10 @@ function AppContent() {
       sent_to_vendor: `🔗 Action Required: Send vendor link for ${shootName}`,
       quote_submitted: `✅ Vendor Quote Received: ${shootName}`,
       approved: `🎉 Quote Approved: ${shootName} - Ready for Shoot`,
+      rejected: `❌ Quote Rejected: ${shootName} - Revision Required`,
       invoice_reminder: `⏰ Invoice Reminder: ${shootName} - Please upload invoice`,
       invoice_uploaded: `📄 Invoice Uploaded: ${shootName}`,
+      payment_complete: `💵 Payment Completed: ${shootName}`,
     };
 
     // Map email types to SMTP templates
@@ -276,15 +270,18 @@ function AppContent() {
       sent_to_vendor: 'newRequest',
       quote_submitted: 'quoteSubmitted',
       approved: 'quoteApproved',
+      rejected: 'quoteRejected',
       invoice_reminder: 'invoiceReminder',
       invoice_uploaded: 'invoiceUploaded',
+      payment_complete: 'paymentComplete',
     };
 
     // Get recipient name from email
           const recipientName = recipientEmail.split('@')[0].split('.').map(n => n.charAt(0).toUpperCase() + n.slice(1)).join(' ');
 
     // Get shoot data for email template
-    const shootData = additionalData?.shoot || shoots.find(s => s.id === shootId) || {
+    const existingShootForData = shoots.find(s => s.id === shootId);
+    const shootData = additionalData?.shoot || existingShootForData || {
       id: shootId,
       name: shootName,
       date: additionalData?.dates || 'TBD',
@@ -296,10 +293,22 @@ function AppContent() {
       recipientName: recipientName,
     };
 
+    // For Gmail threading: ensure all emails in a request group have the same subject
+    // Use a consistent threadSubject based on requestGroupId or first shoot name
+    if (existingShootForData?.requestGroupId) {
+      // Find all shoots in this request group to create a consistent subject
+      const groupShoots = shoots.filter(s => s.requestGroupId === existingShootForData.requestGroupId);
+      const firstShootInGroup = groupShoots.sort((a, b) => (a.multiShootIndex || 0) - (b.multiShootIndex || 0))[0];
+      (shootData as any).threadSubject = firstShootInGroup?.name || shootName;
+      (shootData as any).requestGroupId = existingShootForData.requestGroupId;
+    }
+
     // For multi-shoot, add shoots array
     if (emailType === 'new_request_multi' && additionalData?.shoots) {
       (shootData as any).shoots = additionalData.shoots;
       (shootData as any).recipientName = recipientName;
+      // Use combined name for thread subject
+      (shootData as any).threadSubject = shootName;
     }
 
     // Create the email for UI notification
@@ -877,6 +886,65 @@ function AppContent() {
     return () => clearInterval(interval);
   }, [shoots]);
 
+  // Automatic Invoice Reminder - Send email 7 days after shoot completed without invoice
+  useEffect(() => {
+    const checkInvoiceReminders = () => {
+      const today = new Date();
+      const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+      
+      shoots.forEach(shoot => {
+        // Only check shoots in pending_invoice status without an invoice
+        if (shoot.status !== 'pending_invoice' || shoot.invoiceFile) return;
+        
+        // Find when the shoot was moved to pending_invoice
+        const completedActivity = shoot.activities?.find(a => 
+          a.action === 'Shoot Completed' || a.action.includes('Pending Invoice')
+        );
+        
+        if (!completedActivity) return;
+        
+        const completedDate = new Date(completedActivity.timestamp);
+        const daysSinceComplete = today.getTime() - completedDate.getTime();
+        
+        // Check if it's been 7+ days and we haven't sent a reminder yet
+        const reminderSent = shoot.activities?.some(a => 
+          a.action.includes('Invoice Reminder Sent')
+        );
+        
+        if (daysSinceComplete >= SEVEN_DAYS_MS && !reminderSent) {
+          console.log(`📧 Sending invoice reminder for ${shoot.name} (7+ days without invoice)`);
+          
+          // Send invoice reminder email
+          triggerEmail(
+            shoot.id,
+            shoot.name,
+            'invoice_reminder',
+            shoot.requestor.email || DEFAULT_RECIPIENTS.admin,
+            {
+              shoot: {
+                ...shoot,
+                vendorName: 'Gopala Media'
+              }
+            }
+          );
+          
+          // Mark that we sent a reminder (to avoid duplicate emails)
+          addActivityToShoot(
+            shoot.id, 
+            'Invoice Reminder Sent', 
+            'Automated reminder sent - 7 days since shoot completion without invoice'
+          );
+        }
+      });
+    };
+    
+    // Check on mount and every hour
+    checkInvoiceReminders();
+    const interval = setInterval(checkInvoiceReminders, 60 * 60 * 1000); // Check every hour
+    
+    return () => clearInterval(interval);
+  }, [shoots]);
+
   const handleSendToVendor = async (shootId: string) => {
     const shoot = shoots.find(s => s.id === shootId);
     if (shoot) {
@@ -1086,10 +1154,18 @@ function AppContent() {
       console.error('API save failed:', error);
     }
     
-    // Send rejection email via SMTP
-    emailQuoteRejected(updatedShoot, shoot.requestor.email);
+    // Send rejection email via SMTP with threading support
+    triggerEmail(
+      shootId,
+      shoot.name,
+      'rejected',
+      shoot.requestor.email || DEFAULT_RECIPIENTS.admin,
+      {
+        shoot: { ...updatedShoot, rejectionReason: reason }
+      }
+    );
     
-      addActivityToShoot(shootId, 'Quote Rejected', `Reason: ${reason}. Sent back to vendor for revision.`);
+    addActivityToShoot(shootId, 'Quote Rejected', `Reason: ${reason}. Sent back to vendor for revision.`);
   };
 
   const handleUploadInvoice = async (shootId: string, fileName: string, fileData?: string) => {
@@ -1137,10 +1213,18 @@ function AppContent() {
     
     setShoots(prev => prev.map(s => s.id === shootId ? updatedShoot : s));
     
-    // Send payment complete email via SMTP
-    emailPaymentComplete(updatedShoot);
+    // Send payment complete email via SMTP with threading support
+    triggerEmail(
+      shootId,
+      shoot.name,
+      'payment_complete',
+      DEFAULT_RECIPIENTS.vendor, // Send to vendor
+      {
+        shoot: updatedShoot
+      }
+    );
     
-      addActivityToShoot(shootId, 'Payment Completed', 'Invoice verified and payment processed');
+    addActivityToShoot(shootId, 'Payment Completed', 'Invoice verified and payment processed');
     
     setSelectedShootId(null);
   };
