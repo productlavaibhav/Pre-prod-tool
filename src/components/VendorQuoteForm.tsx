@@ -14,6 +14,7 @@ interface QuoteItem {
   id: string;
   name: string;
   days: number;
+  quantity: number;
   expectedRate: number;
   vendorRate: number;
 }
@@ -72,6 +73,7 @@ export function VendorQuoteForm({ shoot, relatedShoots = [], onSubmit, onBack, i
           id: eq.id || `item-${index}`,
           name: eq.name,
           days: (eq as any).days || 1,
+          quantity: eq.quantity || 1,
           expectedRate: eq.expectedRate || eq.dailyRate || 0,
           vendorRate: eq.vendorRate || 0
         })),
@@ -283,9 +285,10 @@ export function VendorQuoteForm({ shoot, relatedShoots = [], onSubmit, onBack, i
                         onClick={() => setActiveShootIndex(index)}
                         className={`p-4 rounded-xl text-left transition-all border-2 ${
                           activeShootIndex === index
-                            ? 'bg-blue-500 text-white border-blue-600 shadow-lg'
+                            ? 'text-white shadow-lg'
                             : 'bg-white text-gray-700 border-gray-200 hover:border-blue-300 hover:shadow'
                         }`}
+                        style={activeShootIndex === index ? { backgroundColor: '#2D60FF', borderColor: '#2D60FF' } : {}}
                       >
                         <div className="flex items-center gap-2 mb-1">
                           <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
@@ -331,6 +334,7 @@ export function VendorQuoteForm({ shoot, relatedShoots = [], onSubmit, onBack, i
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
                       <th className="px-3 py-2 text-left text-xs text-gray-700">Item</th>
+                      <th className="px-3 py-2 text-center text-xs text-gray-700">Qty</th>
                       <th className="px-3 py-2 text-right text-xs text-gray-700">Your Price</th>
                     </tr>
                   </thead>
@@ -340,6 +344,14 @@ export function VendorQuoteForm({ shoot, relatedShoots = [], onSubmit, onBack, i
                         <td className="px-3 py-3">
                           <div className="text-sm text-gray-900">{item.name}</div>
                           <div className="text-xs text-gray-500">{item.days} day(s)</div>
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <span 
+                            className="inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium"
+                            style={{ backgroundColor: '#EFF6FF', color: '#2D60FF' }}
+                          >
+                            {item.quantity}
+                          </span>
                         </td>
                         <td className="px-3 py-3">
                           <input

@@ -157,34 +157,41 @@ export function MainDashboard({
   ];
 
   // Group shoots by requestGroupId - multi-shoot requests appear as one row
+  // Maintains original order (newest first based on createdAt from API)
   const groupShoots = (shootsList: Shoot[]): (Shoot & { groupedShoots?: Shoot[], shootCount?: number })[] => {
     const grouped: Map<string, Shoot[]> = new Map();
-    const standalone: Shoot[] = [];
+    const seenGroups = new Set<string>();
+    const result: (Shoot & { groupedShoots?: Shoot[], shootCount?: number })[] = [];
     
+    // First pass: collect all shoots by group
     shootsList.forEach(shoot => {
       if (shoot.requestGroupId) {
         const existing = grouped.get(shoot.requestGroupId) || [];
         existing.push(shoot);
         grouped.set(shoot.requestGroupId, existing);
-      } else {
-        standalone.push(shoot);
       }
     });
     
-    // Convert grouped shoots to single representative entries
-    const groupedEntries: (Shoot & { groupedShoots?: Shoot[], shootCount?: number })[] = [];
-    grouped.forEach((groupShoots) => {
-      // Use the first shoot as the representative, but include all shoots data
-      const representative = { 
-        ...groupShoots[0], 
-        groupedShoots: groupShoots,
-        shootCount: groupShoots.length 
-      };
-      groupedEntries.push(representative);
+    // Second pass: maintain original order while grouping
+    shootsList.forEach(shoot => {
+      if (shoot.requestGroupId) {
+        // Only add the group once (when we first encounter it)
+        if (!seenGroups.has(shoot.requestGroupId)) {
+          seenGroups.add(shoot.requestGroupId);
+          const groupShoots = grouped.get(shoot.requestGroupId) || [shoot];
+          result.push({
+            ...groupShoots[0],
+            groupedShoots: groupShoots,
+            shootCount: groupShoots.length
+          });
+        }
+      } else {
+        // Standalone shoot - add in order
+        result.push({ ...shoot, shootCount: 1 });
+      }
     });
     
-    // Combine with standalone shoots
-    return [...groupedEntries, ...standalone.map(s => ({ ...s, shootCount: 1 }))];
+    return result;
   };
 
   // Filter table data based on selected filter
@@ -448,7 +455,7 @@ export function MainDashboard({
             </div>
             <button
               onClick={onOpenNewRequest}
-              className="px-5 py-2.5 rounded-lg text-white flex items-center gap-2 transition-colors font-medium hover:opacity-90"
+              className="px-8 py-3 rounded-full text-white flex items-center gap-2 transition-colors font-medium hover:opacity-90"
               style={{ backgroundColor: '#2D60FF' }}
             >
               <Plus className="w-5 h-5" />

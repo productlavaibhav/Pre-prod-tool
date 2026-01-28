@@ -611,9 +611,10 @@ export function ApprovalScreen({ shoots, allShoots, onApprove, onReject, onBack,
                         onClick={() => setActiveShootIndex(index)}
                         className={`flex-1 px-3 py-2 rounded-lg text-left transition-all border ${
                           activeShootIndex === index
-                            ? 'bg-blue-500 text-white border-blue-600'
+                            ? 'text-white'
                             : 'bg-white text-gray-700 border-gray-200 hover:border-blue-300'
                         }`}
+                        style={activeShootIndex === index ? { backgroundColor: '#2D60FF', borderColor: '#2D60FF' } : {}}
                       >
                         <div className="flex items-center gap-2">
                           <div className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${

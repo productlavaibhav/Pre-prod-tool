@@ -1139,7 +1139,7 @@ export function CreateRequestForm({ onClose, onSubmit, catalogItems, onAddCatalo
               }
             }}
             disabled={!isFormValid() || isSubmitting}
-            className="px-6 py-2.5 rounded-lg text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed font-medium hover:opacity-90"
+            className="px-8 py-3 rounded-full text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed font-medium hover:opacity-90"
             style={{ backgroundColor: '#2D60FF' }}
           >
             {isSubmitting ? (

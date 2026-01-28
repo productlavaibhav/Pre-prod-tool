@@ -518,8 +518,9 @@ export function FinanceDashboard({ shoots, onBack, onUploadInvoice, onOpenApprov
     
     shootsToAnalyze.forEach(invoice => {
       const shootName = invoice.name || invoice.title || 'Unknown Shoot';
+      const shootTotal = parseAmount(invoice);
       
-      if (invoice.equipment && Array.isArray(invoice.equipment)) {
+      if (invoice.equipment && Array.isArray(invoice.equipment) && invoice.equipment.length > 0) {
         invoice.equipment.forEach((eq: any) => {
           const category = inferCategory(eq.name || eq.itemName || '', eq.category);
           const itemName = eq.name || eq.itemName || 'Unknown Item';
@@ -539,6 +540,19 @@ export function FinanceDashboard({ shoots, onBack, onUploadInvoice, onOpenApprov
             days: Number(days),
             total: Number(total)
           });
+        });
+      } else if (shootTotal > 0) {
+        // Shoots without equipment breakdown go to "Other" (matching categorySpendingData logic)
+        if (!categoryItems['Other']) {
+          categoryItems['Other'] = [];
+        }
+        categoryItems['Other'].push({
+          name: 'Shoot Total (No Equipment Breakdown)',
+          shootName,
+          qty: 1,
+          rate: shootTotal,
+          days: 1,
+          total: shootTotal
         });
       }
     });
@@ -686,9 +700,9 @@ export function FinanceDashboard({ shoots, onBack, onUploadInvoice, onOpenApprov
                   padding: '10px 20px',
                   fontSize: '14px',
                   lineHeight: '1',
-                  backgroundColor: filterTab === 'all' ? '#2563EB' : '#F3F4F6',
+                  backgroundColor: filterTab === 'all' ? '#2D60FF' : '#F3F4F6',
                   color: filterTab === 'all' ? '#FFFFFF' : '#4B5563',
-                  boxShadow: filterTab === 'all' ? '0 2px 8px rgba(37, 99, 235, 0.4)' : 'none'
+                  boxShadow: filterTab === 'all' ? '0 2px 8px rgba(45, 96, 255, 0.4)' : 'none'
                 }}
               >
                 All ({invoiceData.length})
@@ -700,9 +714,9 @@ export function FinanceDashboard({ shoots, onBack, onUploadInvoice, onOpenApprov
                   padding: '10px 20px',
                   fontSize: '14px',
                   lineHeight: '1',
-                  backgroundColor: filterTab === 'paid' ? '#2563EB' : '#F3F4F6',
+                  backgroundColor: filterTab === 'paid' ? '#2D60FF' : '#F3F4F6',
                   color: filterTab === 'paid' ? '#FFFFFF' : '#4B5563',
-                  boxShadow: filterTab === 'paid' ? '0 2px 8px rgba(37, 99, 235, 0.4)' : 'none'
+                  boxShadow: filterTab === 'paid' ? '0 2px 8px rgba(45, 96, 255, 0.4)' : 'none'
                 }}
               >
                 Paid ({shoots.filter(s => s.paid).length})
@@ -714,9 +728,9 @@ export function FinanceDashboard({ shoots, onBack, onUploadInvoice, onOpenApprov
                   padding: '10px 20px',
                   fontSize: '14px',
                   lineHeight: '1',
-                  backgroundColor: filterTab === 'pending' ? '#2563EB' : '#F3F4F6',
+                  backgroundColor: filterTab === 'pending' ? '#2D60FF' : '#F3F4F6',
                   color: filterTab === 'pending' ? '#FFFFFF' : '#4B5563',
-                  boxShadow: filterTab === 'pending' ? '0 2px 8px rgba(37, 99, 235, 0.4)' : 'none'
+                  boxShadow: filterTab === 'pending' ? '0 2px 8px rgba(45, 96, 255, 0.4)' : 'none'
                 }}
               >
                 Pending ({shoots.filter(s => !s.paid && (s.status === 'pending_invoice' || s.status === 'completed')).length})

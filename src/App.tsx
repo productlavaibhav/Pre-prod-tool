@@ -579,8 +579,7 @@ function AppContent() {
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>(() => 
     loadFromStorage(STORAGE_KEYS.CATALOG, defaultCatalogItems)
   );
-  const [isLoadingData, setIsLoadingData] = useState(true);
-
+  
   // Default shoots data - empty, users will create their own
   const defaultShoots: Shoot[] = [];
 
@@ -589,7 +588,11 @@ function AppContent() {
     loadFromStorage(STORAGE_KEYS.SHOOTS, defaultShoots)
   );
 
-  // Load data from API on mount (if configured)
+  // Only show loading if we have NO cached data
+  const cachedShoots = loadFromStorage(STORAGE_KEYS.SHOOTS, []);
+  const [isLoadingData, setIsLoadingData] = useState(cachedShoots.length === 0);
+
+  // Load data from API on mount (if configured) - runs in background
   useEffect(() => {
     const loadDataFromAPI = async () => {
       if (!API_URL) {
@@ -599,23 +602,21 @@ function AppContent() {
       }
 
       try {
-        const apiEndpoint = `${API_URL}/api/shoots`;
-        console.log('📡 Fetching shoots from:', apiEndpoint);
+        // Fetch shoots and catalog in PARALLEL for faster loading
+        const [shootsResponse, catalogResponse] = await Promise.all([
+          fetch(`${API_URL}/api/shoots`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(8000)
+          }),
+          fetch(`${API_URL}/api/catalog`, {
+            signal: AbortSignal.timeout(8000)
+          })
+        ]);
         
-        // Try to load shoots from API
-        const shootsResponse = await fetch(apiEndpoint, {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
-        });
-        
-        console.log('📡 Response status:', shootsResponse.status, shootsResponse.statusText);
-        
+        // Process shoots
         if (shootsResponse.ok) {
           const shootsData = await shootsResponse.json();
-          console.log('✅ Shoots loaded:', shootsData?.length, 'items');
-          // Only use API data if we got a valid response
           if (Array.isArray(shootsData)) {
             const formattedShoots: Shoot[] = shootsData.map((s: any) => ({
               id: s.id,
@@ -644,50 +645,31 @@ function AppContent() {
               totalShootsInRequest: s.total_shoots_in_request,
             }));
             setShoots(formattedShoots);
-            console.log('Loaded', formattedShoots.length, 'shoots from API');
+            console.log('✅ Loaded', formattedShoots.length, 'shoots from API');
           }
-        } else {
-          console.log('API returned error, keeping localStorage data');
         }
 
-        // Try to load catalog from API
-        try {
-          const catalogResponse = await fetch(`${API_URL}/api/catalog`, {
-            signal: AbortSignal.timeout(5000)
-          });
-          if (catalogResponse.ok) {
-            const catalogData = await catalogResponse.json();
-            const apiCatalog: CatalogItem[] = (catalogData || []).map((c: any) => ({
-              id: String(c.id), // Ensure ID is string
-              name: c.name,
-              dailyRate: parseFloat(c.daily_rate) || 0,
-              category: c.category,
-              lastUpdated: c.last_updated,
-            }));
-            
-            // Merge API data with defaults - API items take precedence, but keep defaults if not in API
-            const apiIds = new Set(apiCatalog.map(c => String(c.id)));
-            const mergedCatalog = [
-              ...defaultCatalogItems.filter(d => !apiIds.has(String(d.id))), // Defaults first
-              ...apiCatalog, // Then API items (including new ones)
-            ];
-            setCatalogItems(mergedCatalog);
-            console.log('Loaded', apiCatalog.length, 'catalog items from API, merged with', defaultCatalogItems.length, 'defaults, total:', mergedCatalog.length);
-          } else {
-            // API failed, use defaults
-            console.log('Catalog API returned error, using defaults');
-            setCatalogItems(defaultCatalogItems);
-          }
-        } catch (catalogError) {
-          console.log('Catalog fetch failed, using defaults:', catalogError);
-          setCatalogItems(defaultCatalogItems);
+        // Process catalog
+        if (catalogResponse.ok) {
+          const catalogData = await catalogResponse.json();
+          const apiCatalog: CatalogItem[] = (catalogData || []).map((c: any) => ({
+            id: String(c.id),
+            name: c.name,
+            dailyRate: parseFloat(c.daily_rate) || 0,
+            category: c.category,
+            lastUpdated: c.last_updated,
+          }));
+          
+          const apiIds = new Set(apiCatalog.map(c => String(c.id)));
+          const mergedCatalog = [
+            ...defaultCatalogItems.filter(d => !apiIds.has(String(d.id))),
+            ...apiCatalog,
+          ];
+          setCatalogItems(mergedCatalog);
+          console.log('✅ Loaded', apiCatalog.length, 'catalog items from API');
         }
       } catch (error) {
-        console.error('❌ API not available. Error:', error);
-        // Show alert for debugging on production
-        if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
-          console.error('Failed to load from API:', API_URL);
-        }
+        console.error('❌ API fetch error:', error);
       } finally {
         setIsLoadingData(false);
       }
