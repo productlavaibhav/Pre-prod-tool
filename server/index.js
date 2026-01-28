@@ -667,15 +667,50 @@ async function sendEmail(to, template, shoot, threadMessageId = null) {
   }
 }
 
+// ============================================
+// DATABASE CONNECTION
+// ============================================
+
+// Check if DATABASE_URL is configured
+if (!process.env.DATABASE_URL) {
+  console.error('❌ CRITICAL ERROR: DATABASE_URL environment variable is not set!');
+  console.error('   Your data will NOT be saved without a database connection.');
+  console.error('   Please add a PostgreSQL database in Railway and connect it to this service.');
+  console.error('   Railway automatically sets DATABASE_URL when you add a database.');
+} else {
+  // Mask the password in the connection string for logging
+  const maskedUrl = process.env.DATABASE_URL.replace(/:([^:@]{3,})@/, ':****@');
+  console.log('✅ DATABASE_URL configured:', maskedUrl);
+}
+
 // PostgreSQL connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  // Add connection timeout and retry settings
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+  max: 20 // maximum number of clients in the pool
+});
+
+// Test database connection
+pool.on('error', (err) => {
+  console.error('❌ Unexpected database pool error:', err);
 });
 
 // Initialize database tables
 async function initDatabase() {
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ Cannot initialize database - DATABASE_URL not set');
+    return false;
+  }
+
   try {
+    // Test the connection first
+    const testResult = await pool.query('SELECT NOW()');
+    console.log('✅ Database connection successful at:', testResult.rows[0].now);
+
+    // Create tables
     await pool.query(`
       CREATE TABLE IF NOT EXISTS shoots (
         id TEXT PRIMARY KEY,
@@ -715,32 +750,95 @@ async function initDatabase() {
       )
     `);
 
-    console.log('Database tables initialized');
+    // Check if we have any data
+    const shootsCount = await pool.query('SELECT COUNT(*) FROM shoots');
+    const catalogCount = await pool.query('SELECT COUNT(*) FROM catalog_items');
+    
+    console.log('✅ Database tables initialized');
+    console.log('   - Shoots:', shootsCount.rows[0].count);
+    console.log('   - Catalog items:', catalogCount.rows[0].count);
+    
+    return true;
   } catch (error) {
-    console.error('Error initializing database:', error);
+    console.error('❌ CRITICAL: Database initialization failed!');
+    console.error('   Error:', error.message);
+    console.error('   Stack:', error.stack);
+    console.error('   This means data CANNOT be saved. Please check your DATABASE_URL configuration.');
+    return false;
   }
 }
 
 // API Routes
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Health check with database connection test
+app.get('/api/health', async (req, res) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    database: {
+      configured: !!process.env.DATABASE_URL,
+      connected: false,
+      error: null
+    }
+  };
+
+  // Test database connection
+  if (process.env.DATABASE_URL) {
+    try {
+      const result = await pool.query('SELECT NOW(), COUNT(*) as shoot_count FROM shoots');
+      health.database.connected = true;
+      health.database.serverTime = result.rows[0].now;
+      health.database.shootCount = result.rows[0].shoot_count;
+    } catch (error) {
+      health.status = 'error';
+      health.database.connected = false;
+      health.database.error = error.message;
+    }
+  } else {
+    health.status = 'error';
+    health.database.error = 'DATABASE_URL not configured';
+  }
+
+  const statusCode = health.status === 'ok' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
 
 // Get all shoots
 app.get('/api/shoots', async (req, res) => {
+  // Check if database is configured
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ GET /api/shoots - Failed: DATABASE_URL not configured');
+    return res.status(503).json({ 
+      error: 'Database not configured', 
+      details: 'DATABASE_URL environment variable is not set. Please add a PostgreSQL database in Railway.'
+    });
+  }
+
   try {
     const result = await pool.query('SELECT * FROM shoots ORDER BY created_at DESC');
+    console.log(`✅ GET /api/shoots - Returned ${result.rows.length} shoots`);
     res.json(result.rows);
   } catch (error) {
-    console.error('Error fetching shoots:', error);
-    res.status(500).json({ error: 'Failed to fetch shoots' });
+    console.error('❌ Error fetching shoots:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to fetch shoots', 
+      details: error.message 
+    });
   }
 });
 
 // Create or update a shoot
 app.post('/api/shoots', async (req, res) => {
+  // Check if database is configured
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ POST /api/shoots - Failed: DATABASE_URL not configured');
+    return res.status(503).json({ 
+      error: 'Database not configured', 
+      details: 'DATABASE_URL environment variable is not set. Please add a PostgreSQL database in Railway.',
+      hint: 'Go to Railway → Your Project → + New → Database → Add PostgreSQL'
+    });
+  }
+
   try {
     const shoot = req.body;
     console.log('POST /api/shoots - Received:', shoot.id, 'status:', shoot.status);
@@ -803,11 +901,16 @@ app.post('/api/shoots', async (req, res) => {
       shoot.total_shoots_in_request
     ]);
     
-    console.log('POST /api/shoots - Saved:', result.rows[0].id, 'status:', result.rows[0].status);
+    console.log('✅ POST /api/shoots - Saved:', result.rows[0].id, 'status:', result.rows[0].status);
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Error saving shoot:', error);
-    res.status(500).json({ error: 'Failed to save shoot', details: error.message });
+    console.error('❌ Error saving shoot:', error.message);
+    console.error('   Stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to save shoot', 
+      details: error.message,
+      hint: 'Check Railway logs and ensure DATABASE_URL is properly configured'
+    });
   }
 });
 
@@ -824,12 +927,25 @@ app.delete('/api/shoots/:id', async (req, res) => {
 
 // Get all catalog items
 app.get('/api/catalog', async (req, res) => {
+  // Check if database is configured
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ GET /api/catalog - Failed: DATABASE_URL not configured');
+    return res.status(503).json({ 
+      error: 'Database not configured', 
+      details: 'DATABASE_URL environment variable is not set. Please add a PostgreSQL database in Railway.'
+    });
+  }
+
   try {
     const result = await pool.query('SELECT * FROM catalog_items ORDER BY category, name');
+    console.log(`✅ GET /api/catalog - Returned ${result.rows.length} items`);
     res.json(result.rows);
   } catch (error) {
-    console.error('Error fetching catalog:', error);
-    res.status(500).json({ error: 'Failed to fetch catalog' });
+    console.error('❌ Error fetching catalog:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to fetch catalog', 
+      details: error.message 
+    });
   }
 });
 
@@ -1057,7 +1173,26 @@ app.get('/api/email/status', (req, res) => {
 
 // Start server
 app.listen(port, async () => {
-  console.log(`API Server running on port ${port}`);
-  await initDatabase();
+  console.log('='.repeat(60));
+  console.log(`🚀 API Server running on port ${port}`);
+  console.log('='.repeat(60));
+  
+  const dbInitialized = await initDatabase();
+  
+  console.log('='.repeat(60));
+  if (dbInitialized) {
+    console.log('✅ Server is ready to accept requests');
+    console.log('✅ Database is connected and tables are initialized');
+  } else {
+    console.log('⚠️  WARNING: Server started but database is NOT connected');
+    console.log('⚠️  Data will NOT be saved until database is configured');
+    console.log('');
+    console.log('📋 To fix this in Railway:');
+    console.log('   1. Go to your Railway project dashboard');
+    console.log('   2. Click "+ New" → Database → Add PostgreSQL');
+    console.log('   3. Railway will automatically connect it to this service');
+    console.log('   4. Redeploy this service');
+  }
+  console.log('='.repeat(60));
 });
 
