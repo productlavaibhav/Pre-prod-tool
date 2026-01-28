@@ -951,8 +951,18 @@ app.get('/api/catalog', async (req, res) => {
 
 // Create or update catalog item
 app.post('/api/catalog', async (req, res) => {
+  // Check if database is configured
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ POST /api/catalog - Failed: DATABASE_URL not configured');
+    return res.status(503).json({ 
+      error: 'Database not configured', 
+      details: 'DATABASE_URL environment variable is not set. Please add a PostgreSQL database in Railway.'
+    });
+  }
+
   try {
     const item = req.body;
+    console.log('POST /api/catalog - Saving item:', item.name);
     const result = await pool.query(`
       INSERT INTO catalog_items (id, name, daily_rate, category, last_updated)
       VALUES ($1, $2, $3, $4, $5)
@@ -964,17 +974,32 @@ app.post('/api/catalog', async (req, res) => {
       RETURNING *
     `, [item.id, item.name, item.daily_rate, item.category, item.last_updated]);
     
+    console.log('✅ POST /api/catalog - Saved:', result.rows[0].name);
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Error saving catalog item:', error);
-    res.status(500).json({ error: 'Failed to save catalog item' });
+    console.error('❌ Error saving catalog item:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to save catalog item',
+      details: error.message
+    });
   }
 });
 
 // Bulk upsert catalog items
 app.post('/api/catalog/bulk', async (req, res) => {
+  // Check if database is configured
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ POST /api/catalog/bulk - Failed: DATABASE_URL not configured');
+    return res.status(503).json({ 
+      error: 'Database not configured', 
+      details: 'DATABASE_URL environment variable is not set. Please add a PostgreSQL database in Railway.'
+    });
+  }
+
   try {
     const items = req.body;
+    console.log('POST /api/catalog/bulk - Saving', items.length, 'items');
+    
     for (const item of items) {
       await pool.query(`
         INSERT INTO catalog_items (id, name, daily_rate, category, last_updated)
@@ -986,10 +1011,15 @@ app.post('/api/catalog/bulk', async (req, res) => {
           last_updated = EXCLUDED.last_updated
       `, [item.id, item.name, item.daily_rate, item.category, item.last_updated]);
     }
+    
+    console.log('✅ POST /api/catalog/bulk - Saved', items.length, 'items successfully');
     res.json({ success: true, count: items.length });
   } catch (error) {
-    console.error('Error bulk saving catalog:', error);
-    res.status(500).json({ error: 'Failed to save catalog items' });
+    console.error('❌ Error bulk saving catalog:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to save catalog items',
+      details: error.message
+    });
   }
 });
 

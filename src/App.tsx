@@ -784,6 +784,51 @@ function AppContent() {
     }
   };
 
+  // Handler to update catalog and persist to API
+  const handleUpdateCatalog = async (updatedItems: CatalogItem[]) => {
+    // Update local state immediately for responsive UI
+    setCatalogItems(updatedItems);
+
+    // Persist to API in the background
+    if (!API_URL) {
+      console.warn('No API URL configured, catalog changes only saved locally');
+      return;
+    }
+
+    try {
+      console.log('Persisting catalog changes to API... (' + updatedItems.length + ' items)');
+      
+      // Convert to database format
+      const dbItems = updatedItems.map(item => ({
+        id: item.id,
+        name: item.name,
+        daily_rate: item.dailyRate,
+        category: item.category,
+        last_updated: new Date().toISOString(),
+      }));
+
+      // Use bulk endpoint for efficiency
+      const response = await fetch(`${API_URL}/api/catalog/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dbItems),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Catalog saved to database:', result.count, 'items');
+      } else {
+        const errorText = await response.text();
+        console.error('❌ Catalog save failed:', response.status, errorText);
+        // Don't throw error - local changes are still saved
+      }
+    } catch (error) {
+      console.error('❌ Catalog save error:', error);
+      // Don't throw error - local changes are still saved
+    }
+  };
+
   // Helper function to parse shoot date and get end date
   const parseShootEndDate = (dateStr: string): Date | null => {
     try {
@@ -1510,7 +1555,7 @@ function AppContent() {
       {viewMode === 'catalog' && (
         <EquipmentCatalogManager 
           catalogItems={catalogItems}
-          onUpdateCatalog={setCatalogItems}
+          onUpdateCatalog={handleUpdateCatalog}
           onBack={() => setViewMode('dashboard')}
           onOpenApprovals={() => setViewMode('approval')}
           onOpenFinance={() => setViewMode('finance')}
